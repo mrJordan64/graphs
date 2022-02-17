@@ -60,7 +60,7 @@ REPEL_COEF = 0.1
 NONE = -1
 
 
-class Graph():
+class Graph:
     def __init__(self, nodes, adjMtx):
         self.nodes = nodes
         self.order = len(nodes)
