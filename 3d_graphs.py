@@ -5,7 +5,7 @@ INSTRUCTIONS:
 - to select multiple nodes:
     · CTRL+RIGHTCLICK them. also CTRL+RIGHTCLICK a selected node to unselect it
     · if no nodes selected, LEFTCLICK background + DRAG. otherwise, CTRL+LEFTCLICK background + DRAG
-- press BACKSPACE to delete all selected nodes (and all their edges!)
+- BACKSPACE to delete all selected nodes (and all their edges)
 - RIGHTCLICK another node to connect selected nodes to it
 - LEFTCLICK background to create a new node connected to selected nodes
 - press F to fix selected nodes in their position
@@ -13,17 +13,16 @@ INSTRUCTIONS:
 - RIGHTCLICK edge to delete it
 - LEFTCLICK edge to add a new node to it's center
 
-- press X to toggle between polar and free modes
+- X to toggle between polar and free modes
 - polar mode:
-    · press A/D to rotate LEFT/RIGHT around center of graph
-    · press W/S to move FORWARDS/BACKWARDS
-    · press SPACE to autorotate
+    · A/D           rotate around the center of the graph
+    · W/S           move FORWARDS/BACKWARDS
+    · SPACE         toggle autorotation
 - free mode:
-    · W/A/S/D to move horizontally
-    · SPACE/SHIFT to move UP/DOWN
-    · J/L to rotate camera LEFT/RIGHT
+    · W/A/S/D       move horizontally
+    · SPACE/SHIFT   move UP/DOWN
+    · J/L           rotate camera LEFT/RIGHT
 '''
-
 
 
 import pygame
@@ -42,105 +41,131 @@ HALF_WIDTH = int(WINDOW_WIDTH / 2)
 HALF_HEIGHT = int(WINDOW_HEIGHT / 2)
 FPS = 30
 
+CAMERA_LINEAR_SPEED = 0.25
+CAMERA_ANGULAR_SPEED = 2 * np.pi / 128
+
 #   COLORS
 WHITE  = [255, 255, 255]
 BLACK  = [0,   0,   0]
 GRAY   = [150, 150, 150]
 RED    = [255, 0,   0]
 GREEN  = [0,   255, 0]
-BLUE   = [100,   100,   255]
+BLUE   = [100, 100, 255]
 YELLOW = [255, 255, 0]
 
+# NODE CONSTANTS
 NODE_MASS = 1
-NODE_SIZE = 9
-FRICTION_COEF = 0.9
+NODE_SIZE = 80
+
+# PHYSICS CONSTANTS
+FRICTION_COEF = 0.92
 ELASTIC_COEF = 0.03
 REPEL_COEF = 0.1
 
 NONE = -1
 
+np.random.seed(42)
+
 
 class Graph:
     def __init__(self, nodes, adjMtx):
         self.nodes = nodes
-        self.order = len(nodes)
-        self.nodeNum = len(nodes)
-        self.adjMtx = adjMtx
-        self.distMtx = np.zeros((self.nodeNum, self.nodeNum))
-        self.vectMtx = np.zeros((self.nodeNum, self.nodeNum, 3))
+        self.nodeCounter = len(nodes)
+        self.nodeIndex = len(nodes)
+        self.adjMtx = adjMtx  # adjacency matrix
+        self.vectMtx = np.zeros((self.nodeCounter, self.nodeCounter, 3))  # vectors between nodes mtx
+        self.distMtx = np.zeros((self.nodeCounter, self.nodeCounter))     # dists between nodes mtx
 
-    def updateMtxs(self):
-        # CALCULATE VECTORS AND DISTANCES BETWEEN NODES
-        for i in range(len(self.nodes)):
-            for j in range(i, len(self.nodes)):
+    def update_matrices(self):  # update distance and node vector matrices
+        # indices optimised to avoid repeating calculations and calculating vects and dists from a node to itself
+        self.vectMtx = np.zeros((self.nodeCounter, self.nodeCounter, 3))
+        # compute vects for upper triangle
+        for i in range(len(self.nodes) - 1):
+            for j in range(i + 1, len(self.nodes)):
                 self.vectMtx[i, j] = self.nodes[j].pos - self.nodes[i].pos
-                self.vectMtx[j, i] = -1 * self.vectMtx[i, j]
-                self.distMtx[i, j] = np.linalg.norm(self.vectMtx[i, j])
-                self.distMtx[j, i] = self.distMtx[i, j]
 
-    def addNode(self, position):
-        self.nodes = np.append(self.nodes, Node(self.nodeNum, position))
-        self.order += 1
-        self.nodeNum += 1
-        self.adjMtx = np.append(self.adjMtx, np.zeros((1, self.order-1)), axis=0)
-        self.adjMtx = np.append(self.adjMtx, np.zeros((self.order, 1)), axis=1)
-        self.distMtx = np.zeros((self.order, self.order))
-        self.vectMtx = np.zeros((self.order, self.order, 3))
+        # lower triangle is negative transposed upper triangle
+        self.vectMtx = self.vectMtx - self.vectMtx.transpose((1,0,2))  # transpose only axis 0 and 1
+        # dist[i,j] = norm of vect[i,j]
+        self.distMtx = np.linalg.norm(g.vectMtx, axis=2)
 
-    def deleteNode(self, idx):
-        listPos = self.listPosByIndex(idx)
+    def add_node(self, position):
+        self.nodes = np.append(self.nodes, Node(self.nodeIndex, position))
+        self.nodeCounter += 1
+        self.nodeIndex   += 1
 
-        self.adjMtx = np.delete(self.adjMtx, listPos, 0)
-        self.adjMtx = np.delete(self.adjMtx, listPos, 1)
-        self.nodes = np.delete(self.nodes, listPos, 0)
-        self.order -= 1
+        # extend adjacency matrix with row and column of zeros
+        self.adjMtx = np.append(self.adjMtx, np.zeros((1, self.nodeCounter - 1)), axis=0)
+        self.adjMtx = np.append(self.adjMtx, np.zeros((self.nodeCounter, 1)), axis=1)
 
-    def connect(self, listPos1, listPos2):
-        self.adjMtx[listPos1, listPos2] = 1
-        self.adjMtx[listPos2, listPos1] = 1
+        # reset distance and vector matrices with bigger sizes
+        self.distMtx = np.zeros((self.nodeCounter, self.nodeCounter))
+        self.vectMtx = np.zeros((self.nodeCounter, self.nodeCounter, 3))
 
-    def subdivideEdge(self, i, j):
-        # delete edge, create new node in center of old edge and
-        # join it to the nodes of old edge
+    def delete_node(self, idx):
+        # get index of node in node list
+        listIdx = self.list_pos_by_index(idx)
+
+        # delete row and col of the node in the adjacency mtx
+        self.adjMtx = np.delete(self.adjMtx, listIdx, 0)
+        self.adjMtx = np.delete(self.adjMtx, listIdx, 1)
+
+        # delete node from node list
+        self.nodes = np.delete(self.nodes, listIdx, 0)
+        self.nodeCounter -= 1
+
+    # connect two nodes given their indices in the node list
+    def connect_nodes(self, listIdx1, listIdx2):
+        self.adjMtx[listIdx1, listIdx2] = 1
+        self.adjMtx[listIdx2, listIdx1] = 1
+
+    def subdivide_edge(self, i, j):
+        # delete i-j edge
         self.adjMtx[i, j] = 0
         self.adjMtx[j, i] = 0
 
-        position = (self.nodes[i].pos + self.nodes[j].pos) / 2  # new node position
-        self.addNode(position)
-        self.connect(i, self.order-1)
-        self.connect(self.order - 1, j)
+        # create new node in center of old edge
+        position = (self.nodes[i].pos + self.nodes[j].pos) / 2
+        self.add_node(position)
 
-    def getCenter(self):
-        center = np.array([0, 0, 0])
+        # join it to the nodes of old edge
+        self.connect_nodes(i, self.nodeCounter - 1)
+        self.connect_nodes(self.nodeCounter - 1, j)
+
+    # get mean position of all nodes
+    def center_position(self):
+        position = np.zeros(3)
         for node in self.nodes:
-            center = center + node.pos
+            position = position + node.pos
 
-        return center / len(self.nodes)
+        return position / self.nodeCounter
 
-    def listPosByIndex(self, index):
-        for i in range(len(self.nodes)):
+    # given the unique index of a node, get its position in the nodes list
+    def list_pos_by_index(self, index):  ###################################### better name for function?
+        for i in range(self.nodeCounter):
             if self.nodes[i].idx == index:
                 return i
                 break
 
+    # save graph into a .txt
     def save(self):
-        size = len(self.nodes)
         filename = "graph_matrices/" + input("Enter graph name: ")
         with open(filename, "w") as f:
-            f.write(str(size) + "\n\n")
+            f.write(str(self.nodeCounter) + "\n\n")
 
-            for i in range(size):
-                for j in range(size):
+            for i in range(self.nodeCounter):
+                for j in range(self.nodeCounter):
                     f.write(str(int(self.adjMtx[i, j])) + "  ")
                 f.write("\n")
 
 
 class Node():
-    def __init__(self, idx, pos, size=NODE_SIZE, color=BLACK, mass=NODE_MASS):
-        self.idx = idx
+    def __init__(self, index, pos, size=NODE_SIZE, color=BLACK, mass=NODE_MASS):
+        self.idx = index
         self.pos = pos
-        self.screen_pos = project(self.pos)
-        self.speed = np.array([0., 0., 0.])
+        self.screenPos = None
+        self.project_to_screen()
+        self.speed = np.zeros(3)
         self.fixed = False
         self.selected = False
         self.mass = mass
@@ -148,64 +173,82 @@ class Node():
         self.color = color
         self.cameraDist = 0
 
-    def updateSpeed(self, g):
+    def update_speed(self, g):
         if not self.fixed:
-            index = g.listPosByIndex(self.idx)
-            for i in range(g.order):
-                # ADD REPELLING FORCES FROM OTHER NODES
+            index = g.list_pos_by_index(self.idx)
+            for i in range(g.nodeCounter):
+                # add repelling force from other nodes
                 if g.distMtx[index, i] > 0.01:
-                    self.speed -= g.vectMtx[index, i] * REPEL_COEF * self.mass / (g.distMtx[index, i] ** 3)
-                # ADD ATTRACTIVE FORCES FROM EDGES
+                    # F = G * (m1*m2)/d^2  ,   F = m * a    therefore   a = G*m2/d^2
+                    # the direction of the force is that of the vector between the points, v
+                    # adding the normalised vector: a = v/d * G*m2/d^2 = G*v*m2/d^3
+                    self.speed -= REPEL_COEF * g.vectMtx[index, i] * g.nodes[i].mass / (g.distMtx[index, i] ** 3)
+                # if nodes are connected, add attractive force of the edge
                 if g.adjMtx[index, i]:
-                    self.speed += g.vectMtx[index, i] * ELASTIC_COEF
+                    self.speed += ELASTIC_COEF * g.vectMtx[index, i]
 
         self.speed *= FRICTION_COEF
 
-    def updateSize(self, cameraPosition):
+    def update_size(self, cameraPosition):
         self.cameraDist = np.linalg.norm(cameraPosition - self.pos)
         if self.cameraDist > 0.1:
-            self.size = int(100/self.cameraDist)
+            self.size = int(NODE_SIZE/self.cameraDist)
 
     def draw(self):
         if self.fixed:
-            pygame.draw.circle(screen, GRAY, self.screen_pos, self.size)
+            pygame.draw.circle(screen, GRAY, self.screenPos, self.size)
         else:
-            pygame.draw.circle(screen, self.color, self.screen_pos, self.size)
+            pygame.draw.circle(screen, self.color, self.screenPos, self.size)
         if self.selected:
-            pygame.draw.circle(screen, YELLOW, self.screen_pos, self.size + 1, 3)
+            pygame.draw.circle(screen, YELLOW, self.screenPos, self.size + 1, 3)
+
+    def project_to_screen(self):
+        # vector from camera position to node
+        projVect = self.pos - camera.pos
+        k = np.dot(camera.direction, projVect)
+        if k < 0.01:
+            return False
+        # camera is at distance 1 from plane of projection
+        # projvect[1]/k is y component of the intersection point of projvect and projection plane
+        y = int(HALF_HEIGHT * (1 - projVect[1] / k))
+        # projVect[0] * camera.v[2] - projVect[2] * camera.v[0] is the dot product between projvect's horizontal components
+        # and also a vector perpendicular to the camera vector
+        x = int(HALF_WIDTH * (1 + (projVect[0] * camera.direction[2] - projVect[2] * camera.direction[0]) / k))
+
+        self.screenPos = np.array([x, y])
 
 
 class Camera(object):
     def __init__(self, point, angle):
         self.pos = point
-        self.speed = 0.25
         self.angle = angle
-        self.v = np.array([np.cos(self.angle), 0, np.sin(self.angle)])
-        self.rotate = False
-        self.angular_speed = 2 * np.pi / 128
-        self.dist = 8
+        self.direction = np.array([np.cos(self.angle), 0, np.sin(self.angle)])
+        self.speed = CAMERA_LINEAR_SPEED
+        self.angular_speed = CAMERA_ANGULAR_SPEED
+        self.distanceToCenter = 8
+        self.rotating = False
 
     def move_free(self, keys):
         self.angle += (keys[pygame.K_j] - keys[pygame.K_l]) * self.angular_speed
-        self.v = np.array([np.cos(self.angle), 0, np.sin(self.angle)])
+        self.direction = np.array([np.cos(self.angle), 0, np.sin(self.angle)])
 
         vect = np.zeros(3)
         vect += (keys[pygame.K_d] - keys[pygame.K_a]) * \
                 np.array([np.cos(self.angle - np.pi / 2), 0, np.sin(self.angle - np.pi / 2)])
-        vect += (keys[pygame.K_w] - keys[pygame.K_s]) * self.v
+        vect += (keys[pygame.K_w] - keys[pygame.K_s]) * self.direction
         vect += (keys[pygame.K_SPACE] - keys[pygame.K_LSHIFT]) * np.array([0, 1, 0])
 
         self.pos += vect * self.speed
 
-    def move_around(self, keys, center):
-        if self.rotate:
+    def move_polar(self, keys, center):
+        if self.rotating:
             self.angle += self.angular_speed
         else:
-            self.angle += (keys[pygame.K_d] - keys[pygame.K_a]) * self.angular_speed
+            self.angle += self.angular_speed * (keys[pygame.K_d] - keys[pygame.K_a])
 
-        self.v = np.array([np.cos(self.angle), 0, np.sin(self.angle)])
-        self.dist += (keys[pygame.K_s] - keys[pygame.K_w]) * self.speed
-        self.pos = center + self.dist * np.array([np.cos(self.angle - np.pi), 0, np.sin(self.angle - np.pi)])
+        self.distanceToCenter += (keys[pygame.K_s] - keys[pygame.K_w]) * self.speed
+        self.direction = np.array([np.cos(self.angle), 0, np.sin(self.angle)])
+        self.pos = center + self.distanceToCenter * np.array([np.cos(self.angle - np.pi), 0, np.sin(self.angle - np.pi)])
 
 
 def get_graph(filename):
@@ -225,6 +268,7 @@ def get_graph(filename):
     return mtx
 
 
+# Generate a graph using the Erdos-Renyi model
 def get_random_graph(size, p):
     mtx = np.zeros((size, size))
     for i in range(size):
@@ -236,24 +280,8 @@ def get_random_graph(size, p):
     return mtx
 
 
-def project(point):
-    # vector from camera position to point
-    projVect = point - camera.pos
-    k = np.dot(camera.v, projVect)
-    if k < 0.01:
-        return False
-    # camera is at distance 1 from plane of projection
-    # projvect[1]/k is y component of the intersection point of projvect and projection plane
-    y = int(HALF_HEIGHT * (1 - projVect[1] / k))
-    # projVect[0] * camera.v[2] - projVect[2] * camera.v[0] is the dot product between projvect's horizontal components
-    # and a vector perpendicular to the camera vector
-    x = int(HALF_WIDTH * (1 + (projVect[0] * camera.v[2] - projVect[2] * camera.v[0]) / k))
-
-    return np.array([x, y])
-
-
 def draw_line(p1, p2, color=BLACK, thickness=3):
-    pygame.draw.line(screen, color, p1.screen_pos, p2.screen_pos, thickness)
+    pygame.draw.line(screen, color, p1.screenPos, p2.screenPos, thickness)
 
 
 def put_text(text, size, color, place):
@@ -261,36 +289,35 @@ def put_text(text, size, color, place):
     screen.blit(txt, place)
 
 
-def ptNearEdge(point, node1, node2):
-    # returns True if point is in ellipse around nodes and not closer than NODE_SIZE to the nodes
-    ellipse_ctt = 2
-    d1 = np.linalg.norm(point - node1.screen_pos)
-    if d1 < node1.size:
-        return False
+# returns true if point is in an ellipse around the nodes and not closer than NODE_SIZE to one of them
+def pt_near_edge(point, node1, node2):
+    ellipse_constant = 2
+    d1 = np.linalg.norm(point - node1.screenPos)
+    d2 = np.linalg.norm(point - node2.screenPos)
+    d = np.linalg.norm(node1.screenPos - node2.screenPos)
 
-    d2 = np.linalg.norm(point - node2.screen_pos)
-    if d2 < node2.size:
+    if d1 + d2 - d > ellipse_constant or d1 < node1.size or d2 < node2.size:
         return False
-
-    d = np.linalg.norm(node1.screen_pos - node2.screen_pos)
-    if d1 + d2 - d < ellipse_ctt:
-        return True
     else:
-        return False
+        return True
 
 
-def mouseRealPos(mouse_pos, ref_pt, camera):
+# put 2d mouse position onto 3d space.
+# following the line that connects the mouse position on the screen and the camera position,
+# project mouse position onto the unique plane parallel to the screen that contains the reference point
+# (if i remember correctly :D )
+def mouse_real_pos(mouse_pos, ref_pt, camera):
     projVect = ref_pt - camera.pos
-    k = np.dot(camera.v, projVect)
-    mousePosPlane = np.multiply([(mouse_pos[0] - HALF_WIDTH) * camera.v[2],
+    k = np.dot(camera.direction, projVect)
+    mousePosPlane = np.multiply([(mouse_pos[0] - HALF_WIDTH) * camera.direction[2],
                                  HALF_HEIGHT - mouse_pos[1],
-                                 -(mouse_pos[0] - HALF_WIDTH) * camera.v[0]],
+                                 -(mouse_pos[0] - HALF_WIDTH) * camera.direction[0]],
                                 [1 / HALF_WIDTH, 1 / HALF_HEIGHT, 1 / HALF_WIDTH])
 
-    return camera.pos + (camera.v + mousePosPlane) * k
+    return camera.pos + (camera.direction + mousePosPlane) * k
 
 
-def randomWalk(walk, counter, g):
+def random_walk(walk, counter, g):
     walk[3] -= 1
     if walk[2] == 0:
         # if walk in node
@@ -300,7 +327,7 @@ def randomWalk(walk, counter, g):
         if walk[2] == 1:
             # if walk in edge
             walk[0] = walk[1]
-            neighbors = [i for i in range(g.order) if g.adjMtx[walk[0], i] == 1]
+            neighbors = [i for i in range(g.nodeCounter) if g.adjMtx[walk[0], i] == 1]
             walk[1] = np.random.choice(neighbors)
             walk[2] = 0
         else:
@@ -320,19 +347,21 @@ pygame.display.set_caption('3D GRAPHS')
 clock = pygame.time.Clock()
 
 #adjMtx = get_graph("graph_matrices/star-cycle")
-adjMtx = get_random_graph(20, 0.15)
+adjMtx = get_random_graph(15, 0.18)
 
 camera = Camera(np.array([-8., 0., 0.]), 0.)
 
-nodes = [Node(i, np.random.rand(3) * 5, color=BLACK) for i in range(len(adjMtx))]
+#nodes = [Node(i, np.random.rand(3) * 5, color=BLACK) for i in range(len(adjMtx))]
 # random colors
-# nodes = [Node(i, np.random.rand(3) * 1, color=np.random.randint(0, 256, 3)) for i in range(NODE_NUM)]
+nodes = [Node(i, np.random.rand(3) * 5, color=np.random.randint(0, 256, 3)) for i in range(len(adjMtx))]
 
 g = Graph(nodes, adjMtx)
-
-center = g.getCenter()
+center = g.center_position()
 
 nodesByDist = [i for i in range(len(adjMtx))]
+
+# for code convenience, the mouse cursor will be considered a node not related to the graph
+mouseCursor = Node(0, np.zeros(3))
 
 click = [False, False]
 drag = False
@@ -346,8 +375,10 @@ edgeEdited    = False
 nodeHighlighted = False
 mode = 0  # mode 1: free movement, mode 0: rotate around center of graph
 
+###############
 x = 0
 beat = False
+###############
 
 game_over = False
 while not game_over:
@@ -355,7 +386,7 @@ while not game_over:
     screen.fill(WHITE)
     keys = pygame.key.get_pressed()
     mouse_button = (0, 0, 0)
-    mouse_pos = np.array(pygame.mouse.get_pos())
+    mouseCursor.screenPos = np.array(pygame.mouse.get_pos())
     speed = []
     click = [False, False]
     edgeEdited = False
@@ -380,7 +411,7 @@ while not game_over:
                     selectedNodes = []
                 for node in g.nodes:
                     # if node is in screen and in rectangle
-                    if node.screen_pos is not False and selectRect.collidepoint(node.screen_pos):
+                    if node.screenPos is not False and selectRect.collidepoint(node.screenPos):
                         selectedNodes.append(node.idx)
                         node.selected = True
 
@@ -392,7 +423,7 @@ while not game_over:
                     copyAdjMtx = g.adjMtx
                     print(copyAdjMtx is g.adjMtx)
                     unselectedNodes = [node.idx for node in g.nodes if node.idx not in selectedNodes]
-                    unselectedNodes.sort(key=lambda x: g.listPosByIndex(x), reverse=True)
+                    unselectedNodes.sort(key=lambda x: g.list_pos_by_index(x), reverse=True)
                     for i in unselectedNodes:
                         _, copyAdjMtx = deleteNode(i, g.nodes, copyAdjMtx) ###############################################################3
             if event.key == pygame.K_i:
@@ -407,39 +438,42 @@ while not game_over:
                     for i in range(len(copyAdjMtx)):
                         g.nodes.append(Node(NODE_NUM+i, np.random.rand(3) * 1))
 
-                    g.order += len(copyAdjMtx)
-                    g.nodeNum += len(copyAdjMtx)
-                    g.distMtx = np.zeros((g.order, g.order))
-                    g.vectMtx = np.zeros((g.order, g.order, 3))
+                    g.nodeCounter += len(copyAdjMtx)
+                    g.nodeIndex += len(copyAdjMtx)
+                    g.distMtx = np.zeros((g.nodeCounter, g.nodeCounter))
+                    g.vectMtx = np.zeros((g.nodeCounter, g.nodeCounter, 3))
             if event.key == pygame.K_x:
                 mode = (mode+1) % 2
             if event.key == pygame.K_SPACE:
                 if mode == 0:
-                    camera.rotate = not camera.rotate
+                    camera.rotating = not camera.rotating
             if event.key == pygame.K_b:
                 beat = not beat
 
+#############################################################
     if beat:
         x = (x+1/50) % 1
         ELASTIC_COEF = 0.03 + 0.02*np.cos(2*np.pi*x)
 
     #walk = randomWalk(walk, counter, g)
+#############################################################
 
     #  UPDATE POSITION AND DISTANCE MATRICES
-    g.updateMtxs()
+    g.update_matrices()
 
     # UPDATE SIZES, SPEEDS AND POSITIONS OF NODES
     if draggedNode != NONE:
-        index = g.listPosByIndex(draggedNode)
-        mousePos3d = mouseRealPos(mouse_pos, g.nodes[index].pos, camera)
-        pygame.draw.circle(screen, RED, project(mousePos3d), g.nodes[index].size - 1, 2)
-        g.nodes[index].speed += (mousePos3d - g.nodes[index].pos) * 0.1 * FRICTION_COEF
+        index = g.list_pos_by_index(draggedNode)
+        mouseCursor.pos = mouse_real_pos(mouseCursor.screenPos, g.nodes[index].pos, camera)
+        pygame.draw.circle(screen, RED, mouseCursor.screenPos, g.nodes[index].size - 1, 2)
+        g.nodes[index].speed += (mouseCursor.pos - g.nodes[index].pos) * 0.1 * FRICTION_COEF
 
+    #############################################################
     # GRAVITY
     '''
     for i in range(12):
         for j in range(12):
-            pos = project(np.array([i/2, 0, j/2]))
+            pos = projectPoint(np.array([i/2, 0, j/2]))
             if pos is not False:
                 pygame.draw.circle(screen, BLACK, pos, 1)
 
@@ -450,21 +484,21 @@ while not game_over:
         node.pos += node.speed
         if node.pos[1] < 0:
             node.pos[1] = 0
-        node.screen_pos = project(node.pos)'''
+        node.screen_pos = projectPoint(node.pos)'''
+    #############################################################
 
     for node in g.nodes:
-        node.updateSize(camera.pos)
-        node.updateSpeed(g)
+        node.update_speed(g)
         node.pos += node.speed
-        node.screen_pos = project(node.pos)
+        node.update_size(camera.pos)
+        node.project_to_screen()
 
     # DRAW AND EDIT EDGES
-    for i in range(g.order):
-        for j in range(i, g.order):
+    for i in range(g.nodeCounter):
+        for j in range(i, g.nodeCounter):
             # if nodes joined and in screen
-            if g.adjMtx[i, j] and g.nodes[i].screen_pos is not False and g.nodes[j].screen_pos is not False:
-                # if mouse near edge
-                if ptNearEdge(mouse_pos, g.nodes[i], g.nodes[j]):
+            if g.adjMtx[i, j] and g.nodes[i].screenPos is not False and g.nodes[j].screenPos is not False:
+                if pt_near_edge(mouseCursor.screenPos, g.nodes[i], g.nodes[j]):
                     # draw edge highlighted if mouse near it
                     draw_line(g.nodes[i], g.nodes[j], RED, 5)
                     if mouse_button[2]:  # right click
@@ -473,7 +507,7 @@ while not game_over:
                         g.adjMtx[j, i] = 0
                     elif click[0] and not edgeEdited:  # if left click and no edge edited yet
                         # subdivide edge
-                        g.subdivideEdge(i, j)
+                        g.subdivide_edge(i, j)
                         edgeEdited = True
                 # if mouse not near edge
                 else:
@@ -484,58 +518,57 @@ while not game_over:
                         draw_line(g.nodes[i], g.nodes[j], BLUE, 8)'''
 
     #  DRAW NODES
-    # nodesByDist.sort(reverse=True, key=lambda n: g.nodes[n].cameraDist)
-    # for i in nodesByDist:
-    for node in g.nodes:
+    nodesByDist = sorted([i for i in range(g.nodeCounter)], reverse=True, key=lambda n: g.nodes[n].cameraDist)
+    for i in nodesByDist:
         # if node in screen
-        if node.screen_pos is not False:
-            node.draw()
+        if g.nodes[i].screenPos is not False:
+            g.nodes[i].draw()
             '''
             if g.listPosByIndex(node.idx) == walk[0] and walk[2] == 0:
                 pygame.draw.circle(screen, BLUE, node.screen_pos, node.size + 1)'''
-            mouseDist = np.linalg.norm(mouse_pos - node.screen_pos)
+            mouseDist = np.linalg.norm(mouseCursor.screenPos - g.nodes[i].screenPos)
             # if mouse over node
-            if mouseDist < node.size + 1:
+            if mouseDist < g.nodes[i].size + 1:
                 # draw highlight
                 nodeHighlighted = True
-                if click[0]:
-                    draggedNode = node.idx
-                pygame.draw.circle(screen, RED, node.screen_pos, node.size + 1, 2)
+                if click[0]:  # left click
+                    draggedNode = g.nodes[i].idx
+                pygame.draw.circle(screen, RED, g.nodes[i].screenPos, g.nodes[i].size + 1, 2)
                 if click[1]:  # right click
-                    # if no selected nodes, select it
-                    if not selectedNodes:
-                        node.selected = True
-                        selectedNodes.append(node.idx)
+                    if not selectedNodes: # if no selected nodes, select it
+                        g.nodes[i].selected = True
+                        selectedNodes.append(g.nodes[i].idx)
                     else:
                         if keys[pygame.K_RCTRL] or keys[pygame.K_LCTRL]:
                             # if there are selected nodes and control pressed, add or remove from selected nodes
-                            node.selected = not node.selected
-                            if node.selected:
-                                selectedNodes.append(node.idx)
+                            g.nodes[i].selected = not g.nodes[i].selected
+                            if g.nodes[i].selected:
+                                selectedNodes.append(g.nodes[i].idx)
                             else:
-                                selectedNodes.remove(node.idx)
+                                selectedNodes.remove(g.nodes[i].idx)
                         else:
                             # if control not pressed, connect selected nodes to node
-                            listPos = g.listPosByIndex(node.idx)
-                            node.selected = False
+                            listPos = g.list_pos_by_index(g.nodes[i].idx)
+                            g.nodes[i].selected = False
                             for index in selectedNodes:
-                                listPos2 = g.listPosByIndex(index)
-                                g.connect(listPos, listPos2)
+                                listPos2 = g.list_pos_by_index(index)
+                                g.connect_nodes(listPos, listPos2)
                                 g.nodes[listPos2].selected = False
                             selectedNodes = []
 
     # MOUSE RECTANGLE SELECTION
+    # if click[0], save mouse position to create the selection rectangle in case mouse is dragged
     if click[0]:
-        selectRectPt = mouse_pos
-        selectRect = pygame.Rect(mouse_pos, [0, 0])
+        selectRectPt = mouseCursor.screenPos
+        selectRect = pygame.Rect(selectRectPt, [0, 0])
         if nodeHighlighted:
             drag = False
     if drag:
         # determine up-left and down-right pts of selection rectangle
-        up_left = np.array([min(selectRectPt[0], mouse_pos[0]),
-                            min(selectRectPt[1], mouse_pos[1])])
-        down_right = np.array([max(selectRectPt[0], mouse_pos[0]),
-                               max(selectRectPt[1], mouse_pos[1])])
+        up_left = np.array([min(selectRectPt[0], mouseCursor.screenPos[0]),
+                            min(selectRectPt[1], mouseCursor.screenPos[1])])
+        down_right = np.array([max(selectRectPt[0], mouseCursor.screenPos[0]),
+                               max(selectRectPt[1], mouseCursor.screenPos[1])])
 
         # get selection rectangle and draw it
         selectRect = pygame.Rect(up_left, [down_right[0]-up_left[0], down_right[1]-up_left[1]])
@@ -543,37 +576,37 @@ while not game_over:
         # highlight nodes in selection rectangle
         for node in g.nodes:
             # if node is in rectangle
-            if node.screen_pos is not False and selectRect.collidepoint(node.screen_pos):
-                pygame.draw.circle(screen, RED, node.screen_pos, node.size + 1, 2)
+            if node.screenPos is not False and selectRect.collidepoint(node.screenPos):
+                pygame.draw.circle(screen, RED, node.screenPos, node.size + 1, 2)
 
     # if right click no node or edge, unselect all nodes
     if click[1] and not nodeHighlighted and not edgeEdited:
         for node in selectedNodes:
-            g.nodes[g.listPosByIndex(node)].selected = False
+            g.nodes[g.list_pos_by_index(node)].selected = False
         selectedNodes = []
 
     if selectedNodes:
         # ADD NODE AND JOIN IT TO SELECTED ONES
         if click[0] and not (nodeHighlighted or edgeEdited or keys[pygame.K_RCTRL] or keys[pygame.K_LCTRL]):
-            listPos = g.listPosByIndex(selectedNodes[0])
+            listPos = g.list_pos_by_index(selectedNodes[0])
             g.nodes[listPos].selected = False
-            mousePos3d = mouseRealPos(mouse_pos, g.nodes[listPos].pos, camera)
-            g.addNode(mousePos3d)
-            g.connect(listPos, g.order - 1)
+            mouseCursor.pos = mouse_real_pos(mouseCursor.screenPos, g.nodes[listPos].pos, camera)
+            g.add_node(mouseCursor.pos)
+            g.connect_nodes(listPos, g.nodeCounter - 1)
             for node in selectedNodes[1:]:
-                listPos = g.listPosByIndex(node)
+                listPos = g.list_pos_by_index(node)
                 g.nodes[listPos].selected = False
-                g.connect(listPos, g.order - 1)
+                g.connect_nodes(listPos, g.nodeCounter - 1)
             selected_nodes = []
         # DELETE NODE
         if keys[pygame.K_BACKSPACE]:
             for node in selectedNodes:
-                g.deleteNode(node)
+                g.delete_node(node)
             selectedNodes = []
         # FIX NODE
         if keys[pygame.K_f]:
             for node in selectedNodes:
-                listPos = g.listPosByIndex(node)
+                listPos = g.list_pos_by_index(node)
                 g.nodes[listPos].selected = False
                 g.nodes[listPos].fixed = not g.nodes[listPos].fixed
             selectedNodes = []
@@ -582,8 +615,7 @@ while not game_over:
         camera.move_free(keys)
         put_text("MODE: FREE", 16, BLACK, (8, 24))
     elif mode == 0:
-        center = g.getCenter()
-        camera.move_around(keys, center)
+        camera.move_polar(keys, g.center_position())
         put_text("MODE: POLAR", 16, BLACK, (8, 24))
 
     put_text("FPS: " + str(round(clock.get_fps(), 5)), 16, BLACK, (8, 8))
@@ -591,8 +623,8 @@ while not game_over:
 
     if show_indexes:
         for node in g.nodes:
-            if node.screen_pos is not False:
-                put_text(str(node.idx), 12, WHITE, node.screen_pos-np.array([4,5]))
+            if node.screenPos is not False:
+                put_text(str(node.idx), 12, WHITE, node.screenPos - np.array([4, 5]))
 
     pygame.display.update()
 
