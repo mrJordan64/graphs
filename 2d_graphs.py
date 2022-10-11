@@ -75,13 +75,13 @@ class Node:
         if not self.fixed:
             for node in nodes:
                 # ADD REPELLING FORCES FROM OTHER NODES
-                if node_dist_mtx[self.idx, node.idx] > node_size:
-                    self.speed -= repel_coef * node_vect_mtx[self.idx, node.idx] / (node_dist_mtx[self.idx, node.idx] ** 3)
+                if node_dist_mtx[self.idx, node.id] > node_size:
+                    self.speed -= repel_coef * node_vect_mtx[self.idx, node.id] / (node_dist_mtx[self.idx, node.id] ** 3)
                     # DIST^3 BECAUSE WE ALSO NORMALIZE VECT
 
                 # ADD ATTRACTIVE FORCES FROM EDGES
-                if ADJ_MTX[self.idx, node.idx]:
-                    self.speed += node_vect_mtx[self.idx, node.idx] * elastic_coef
+                if ADJ_MTX[self.idx, node.id]:
+                    self.speed += node_vect_mtx[self.idx, node.id] * elastic_coef
 
         self.speed *= friction_coef
 
@@ -204,10 +204,10 @@ while not end:
                             NODE_NUM += 1
                             ADJ_MTX = np.append(ADJ_MTX, np.zeros((1, NODE_NUM - 1)), axis=0)
                             ADJ_MTX = np.append(ADJ_MTX, [[0] for i in range(NODE_NUM)], axis=1)
-                            ADJ_MTX[nodes[i].idx, NODE_NUM - 1] = 1
-                            ADJ_MTX[NODE_NUM - 1, nodes[i].idx] = 1
-                            ADJ_MTX[nodes[j].idx, NODE_NUM - 1] = 1
-                            ADJ_MTX[NODE_NUM - 1, nodes[j].idx] = 1
+                            ADJ_MTX[nodes[i].id, NODE_NUM - 1] = 1
+                            ADJ_MTX[NODE_NUM - 1, nodes[i].id] = 1
+                            ADJ_MTX[nodes[j].id, NODE_NUM - 1] = 1
+                            ADJ_MTX[NODE_NUM - 1, nodes[j].id] = 1
                             node_dist_mtx = np.zeros((NODE_NUM, NODE_NUM))
                             node_vect_mtx = np.zeros((NODE_NUM, NODE_NUM, 2))
 
@@ -221,7 +221,7 @@ while not end:
         ADJ_MTX = np.delete(ADJ_MTX, selected, 1)
         nodes = np.delete(nodes, selected, 0)
         for i in range(selected, NODE_NUM - 1):
-            nodes[i].idx -= 1
+            nodes[i].id -= 1
         NODE_NUM -= 1
         selected = NONE
 
